@@ -1,0 +1,83 @@
+// Load the administrative boundaries dataset
+var adminBoundaries = ee.FeatureCollection("FAO/GAUL/2015/level1");
+
+var state = adminBoundaries.filter(ee.Filter.eq('ADM1_NAME', 'Assam'));
+
+// Center the map on the state
+Map.centerObject(state, 7);
+
+// Add the state boundary to the map
+Map.addLayer(state, {color: 'green'}, 'AssamBoundary');
+
+// Export the boundary as GeoJSON (optional)
+Export.table.toDrive({
+  collection: state,
+  description: 'AssamBoundary',
+  fileFormat: 'GeoJSON'
+});
+
+var modis = ee.ImageCollection("MODIS/061/MOD11A1")
+//.filterDate("2023-2-14","2023-5-14") //1 month before flood
+//.filterDate("2023-6-14","2023-7-14")  //during the flood month
+.filterDate("2023-7-14","2023-10-14") //3 month after
+.select('LST_Day_1km')
+
+//Kelvin to Celcius
+var modcel = modis.map(function(img){
+  return img
+  .multiply(0.02)
+  .subtract(273.15)
+  .copyProperties(img, ['system:time_start'])
+})
+
+//Chart of LST TEMPORAL ANALYSIS
+var tsc = ui.Chart.image.series({
+  imageCollection : modcel,
+  region : state,
+  reducer : ee.Reducer.mean(),
+  scale :1000,
+  xProperty : "system:time_start"})
+    .setOptions({
+      title : "LST Temporal Analysis",
+      vAxix  : {title : 'LSTcelcius'}
+    });
+    
+print(tsc)
+
+
+//image visualization
+
+var mean = modcel.mean().clip(state)
+Map.addLayer(mean,imageVisParam,'LST mean')
+
+
+print(mean, 'LST Mean Image');
+
+
+// //A polygon has been drawn for a particular region 
+// var smallArea = ee.Geometry.Polygon(
+// [[[92.47953477053275,25.944904365556788],
+// [93.68803086428275,25.944904365556788],
+// [93.68803086428275,26.761991607862115],
+// [92.47953477053275,26.761991607862115],
+// [92.47953477053275,25.944904365556788]]]);
+
+// Map.centerObject(smallArea, 10);
+// // Clip mean LST image to this polygon
+// var smallMean = mean.clip(smallArea);
+// Map.addLayer(smallMean, imageVisParam, 'LST mean (Small Region)');
+
+// Export.image.toDrive({
+//   image: smallMean,
+//   description: 'Mean_LST_SmallRegion',
+//   scale: 1000,
+//   folder: 'My Drive', 
+//   region: smallArea,
+//   fileFormat: 'GeoTIFF'
+// });
+
+
+
+
+
+git
