@@ -1,0 +1,114 @@
+// Step 1: Load MODIS NDVI Dataset
+var modisNDVI = ee.ImageCollection("MODIS/061/MOD13Q1")
+  .filterDate('2015-01-01', '2025-01-01')  // Define time range
+  .select('NDVI');  // Select the NDVI band
+
+// Step 2: Load Sonitpur & Nagaon districts (from GAUL)a
+var gaulLevel2 = ee.FeatureCollection('FAO/GAUL/2015/level2');
+var assamDistricts = gaulLevel2.filter(ee.Filter.eq('ADM1_NAME', 'Assam'));
+var targetDistricts = assamDistricts.filter(ee.Filter.inList('ADM2_NAME', ['Sonitpur', 'Nagaon']));
+
+// Step 3: Clip NDVI Data to Sonitpur & Nagaon
+var ndviClipped = modisNDVI.map(function(image) {
+  return image.clip(targetDistricts);
+});
+
+// Step 4: Interpolate NDVI and Preserve Time Property
+var interpolateNDVI = function(image) {
+  var ndvi = image.select('NDVI').multiply(0.0001); // Scale NDVI to [0, 1]
+  return ndvi.rename('NDVI_Interpolated')
+    .copyProperties(image, ['system:time_start']); // Retain timestamp
+};
+
+var interpolatedNDVI = ndviClipped.map(interpolateNDVI);
+
+// Step 5: Filter NDVI by Seasons
+var phase2 = interpolatedNDVI.filter(ee.Filter.calendarRange(3, 4, 'month')); // March-April
+var phase3 = interpolatedNDVI.filter(ee.Filter.calendarRange(5, 7, 'month')); // May-July
+var phase5 = interpolatedNDVI.filter(ee.Filter.calendarRange(9, 12, 'month')); // September-December
+
+// Compute mean NDVI for each phase
+var meanNDVI_phase2 = phase2.mean().rename('NDVI_Phase2');
+var meanNDVI_phase3 = phase3.mean().rename('NDVI_Phase3');
+var meanNDVI_phase5 = phase5.mean().rename('NDVI_Phase5');
+
+// Step 6: Combine NDVI Phases into a Single Image
+var ndviPhases = meanNDVI_phase2.addBands([meanNDVI_phase3, meanNDVI_phase5]);
+
+// Step 7: Display NDVI Phases on the Map
+Map.centerObject(targetDistricts, 8);
+Map.addLayer(ndviPhases.select('NDVI_Phase2'), {min: 0, max: 0.9, palette: ['white', 'green']}, "NDVI Phase 2 (Mar-Apr)");
+Map.addLayer(ndviPhases.select('NDVI_Phase3'), {min: 0, max: 0.9, palette: ['white', 'green']}, "NDVI Phase 3 (May-Jul)");
+Map.addLayer(ndviPhases.select('NDVI_Phase5'), {min: 0, max: 0.9, palette: ['white', 'green']}, "NDVI Phase 5 (Sep-Dec)");
+
+// Step 8: Export Mean NDVI Values for Each Phase
+var stats = ndviPhases.reduceRegion({
+  reducer: ee.Reducer.mean(),
+  geometry: targetDistricts.geometry(),
+  scale: 250,
+  bestEffort: true,
+  maxPixels: 1e9  // Adjust as needed
+});
+
+// Convert dictionary to a feature for export
+var statsFeature = ee.Feature(null, stats);
+
+// Export as CSV to Google Drive
+// Export.table.toDrive({
+//   collection: ee.FeatureCollection([statsFeature]),
+//   description: 'NDVI_Assam_Seasonal_Means',
+//   fileFormat: 'CSV'
+// });
+
+
+// Step 5: Load River Data
+var rivers = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers");
+
+// Filter for Assam region
+var assamRivers = rivers.filterBounds(targetDistricts);
+
+// Display rivers on the map
+Map.addLayer(assamRivers, {color: 'blue'}, "Rivers in Sonitpur & Nagaon");
+
+// Print river data
+print("River Data:", assamRivers);
+
+
+// Step 6: Load Population Density Data
+var popDensity = ee.ImageCollection("CIESIN/GPWv4/population-density")
+  .filterDate('2020-01-01', '2020-12-31')
+  .mean()
+  .clip(targetDistricts);
+
+// Set visualization for population density
+var popVis = {
+  min: 0, max: 5000, palette: ['yellow', 'red']
+};
+
+// Display on map
+Map.addLayer(popDensity, popVis, "Population Density");
+
+// Print population data
+print("Population Density Data:", popDensity);
+
+
+
+// Step 7: Prepare Data for Clustering
+var stack = popDensity.addBands(ndviClipped.mean()).addBands(assamRivers.reduceToImage(['UP_CELLS'], ee.Reducer.count()));
+
+// Step 8: Run k-means Clustering
+var training = stack.sample({
+  region: targetDistricts,
+  scale: 500,
+  numPixels: 5000
+});
+
+var clusterer = ee.Clusterer.wekaKMeans(3).train(training);
+var clustered = stack.cluster(clusterer);
+
+// Display clusters
+Map.addLayer(clustered.randomVisualizer(), {}, "Flood Risk Clusters");
+
+// Print clustering results
+print("Clustered Data:", clustered);
+

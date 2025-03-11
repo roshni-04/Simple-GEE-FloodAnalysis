@@ -1,0 +1,167 @@
+/**********************
+ * Flood-Prone Area Analysis for Assam *
+ * Factors: NDVI, LST, Population Density, Rivers *
+ * (Based on Methodology from the Paper) *
+ **********************/
+
+// ==============================
+// 1. Define the Study Area (Sonitpur & Nagaon)
+// ==============================
+var gaulLevel2 = ee.FeatureCollection('FAO/GAUL/2015/level2');
+var assamDistricts = gaulLevel2.filter(ee.Filter.eq('ADM1_NAME', 'Assam'));
+var targetDistricts = assamDistricts.filter(ee.Filter.inList('ADM2_NAME', ['Sonitpur', 'Nagaon']));
+
+// Center map on our study area
+Map.centerObject(targetDistricts, 8);
+
+// ==============================
+// 2. Load and Process NDVI Data (Vegetation Health)
+// ==============================
+var modisNDVI = ee.ImageCollection("MODIS/061/MOD13Q1")
+  .filterDate('2015-01-01', '2025-01-01')  // Use 2015-2025 data
+  .select('NDVI');
+
+var ndviClipped = modisNDVI.map(function(image) {
+  return image.clip(targetDistricts);
+});
+
+var interpolateNDVI = function(image) {
+  // Multiply by 0.0001 to scale NDVI to [0,1]
+  var ndvi = image.select('NDVI').multiply(0.0001);
+  return ndvi.rename('NDVI_Interpolated')
+             .copyProperties(image, ['system:time_start']);
+};
+var interpolatedNDVI = ndviClipped.map(interpolateNDVI);
+
+// For simplicity, compute the mean NDVI over the full period
+var meanNDVI = interpolatedNDVI.mean().rename('NDVI_Mean');
+Map.addLayer(meanNDVI, {min: 0, max: 0.9, palette: ['white', 'green']}, "Mean NDVI");
+
+// ==============================
+// 3. Load and Process LST Data (Land Surface Temperature)
+// ==============================
+// Using MODIS LST dataset (MOD11A2: 8-day, 1km resolution)
+// Note: LST values are usually scaled by 0.02. We convert to °C by multiplying by 0.02 and subtracting 273.15.
+var modisLST = ee.ImageCollection("MODIS/061/MOD11A2")
+  .filterDate('2015-01-01', '2025-01-01')
+  .select('LST_Day_1km');
+
+var lstClipped = modisLST.map(function(image) {
+  return image.clip(targetDistricts);
+});
+
+var scaleLST = function(image) {
+  var lst = image.multiply(0.02).subtract(273.15); // Convert to Celsius
+  return lst.rename('LST').copyProperties(image, ['system:time_start']);
+};
+var lstCelsius = lstClipped.map(scaleLST);
+var meanLST = lstCelsius.mean().rename('LST_Mean');
+Map.addLayer(meanLST, {min: 20, max: 40, palette: ['white', 'orange', 'red']}, "Mean LST");
+
+// ==============================
+// 4. Load River Data and Create Buffers
+// ==============================
+var rivers = ee.FeatureCollection("WWF/HydroSHEDS/v1/FreeFlowingRivers");
+// Filter rivers for our study area
+var assamRivers = rivers.filterBounds(targetDistricts);
+Map.addLayer(assamRivers, {color: 'blue'}, "Rivers");
+
+// Create buffers around rivers
+// We'll use 400m for main rivers and 40m for smaller rivers. 
+// (Here, we assume an attribute 'UP_CELLS' exists that distinguishes river types.)
+var bufferMain = assamRivers.filter(ee.Filter.eq('UP_CELLS', 1))
+  .map(function(feature) { return feature.buffer(400).set('buffer', 1); });
+var bufferSmall = assamRivers.filter(ee.Filter.eq('UP_CELLS', 0))
+  .map(function(feature) { return feature.buffer(40).set('buffer', 1); });
+
+// Merge both buffer collections
+var riverBuffer = bufferMain.merge(bufferSmall);
+// Convert buffered rivers to an image using the numeric property 'buffer'
+var riverBufferRaster = riverBuffer.reduceToImage({
+  properties: ['buffer'],
+  reducer: ee.Reducer.first()
+}).unmask(0).gt(0);  // Create binary mask: 1 if in buffer, 0 otherwise
+
+// Display the river buffer mask
+Map.addLayer(riverBufferRaster, {palette: ['yellow'], opacity: 0.5}, "River Buffer");
+
+// ==============================
+// 5. Load Population Density Data
+// ==============================
+var popDensity = ee.ImageCollection("CIESIN/GPWv4/population-density")
+  .filterDate('2020-01-01', '2020-12-31')
+  .mean()
+  .clip(targetDistricts);
+
+var popVis = {min: 0, max: 5000, palette: ['yellow', 'red']};
+Map.addLayer(popDensity, popVis, "Population Density");
+
+// ==============================
+// 6. Define Flood-Prone Areas (Based on Population and Rivers)
+// ==============================
+// Identify high population density areas (adjust threshold if needed)
+var highPopDensity = popDensity.gt(500).selfMask(); // Lower threshold to 500 if 2000 is too high
+
+// Overlay high population density with river buffers
+var floodProneAreas = highPopDensity.updateMask(riverBufferRaster);
+// Display flood-prone areas
+Map.addLayer(floodProneAreas, {palette: ['red'], opacity: 0.6}, "Flood-Prone Areas Near Rivers");
+print("Flood-Prone Areas (Final):", floodProneAreas);
+
+// ==============================
+// 7. Combine Datasets for Clustering
+// ==============================
+// Here we combine NDVI, LST, Population Density, and a river mask (as a band)
+var combinedStack = popDensity
+  .addBands(meanNDVI)
+  .addBands(meanLST)
+  .addBands(riverBufferRaster.rename('River_Buffer')); 
+
+// Sample the combined dataset over the target districts
+var trainingData = combinedStack.sample({
+  region: targetDistricts,
+  scale: 500,
+  numPixels: 5000
+});
+
+// ==============================
+// 8. Run K-Means Clustering (as DBSCAN/HDBSCAN is not available in GEE)
+// ==============================
+var numClusters = 10; // You can adjust this number if needed
+var clusterer = ee.Clusterer.wekaKMeans(numClusters).train(trainingData);
+var clustered = combinedStack.cluster(clusterer);
+
+// Display clustered map
+Map.addLayer(clustered.randomVisualizer(), {}, "Flood Risk Clusters");
+
+// ==============================
+// 9. (Optional) Validate with Historical Flood Data
+// ==============================
+// Uncomment and replace the asset path with a valid historical flood dataset if available.
+/*
+var floodEvents = ee.FeatureCollection("projects/ee-roshniprojectworkuse/assets/RS_Session_255_AU_887")
+  .filterBounds(targetDistricts);
+Map.addLayer(floodEvents, {color: 'blue'}, "Historical Flood Events");
+var intersectFloods = clustered.sampleRegions({
+  collection: floodEvents,
+  properties: ['flood_severity'],
+  scale: 500
+});
+print("Flood Events Inside Clusters:", intersectFloods);
+*/
+
+// ==============================
+// End of Script
+// ==============================
+
+/*
+Explanation:
+- Steps 1-4 load and process the NDVI and LST data, then clip it to our study area.
+- Step 4 processes rivers: we buffer them and convert to a binary mask.
+- Step 5 loads population density data.
+- Step 6 creates a flood-prone area layer by overlaying high population density (using a lower threshold of 500) with the river buffer.
+- Step 7 combines NDVI, LST, population density, and the river mask into one image (combinedStack).
+- Step 8 samples the combined dataset and runs K-Means clustering to group areas with similar flood risk characteristics.
+- (Optional) Step 9 shows how to validate clusters with historical flood events.
+This script should produce a practical output for flood-prone areas based on the four factors you mentioned.
+*/
