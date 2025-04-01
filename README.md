@@ -5,8 +5,8 @@
 
 **SVM (Support Vector Machine)**  
 ![image](https://github.com/user-attachments/assets/d51eac3f-7d19-4ee0-af3e-6fef1ad970e0)  
-![image](https://github.com/user-attachments/assets/e4c062c0-840c-4c7f-abf1-d15197ee7ae6)  
-![image](https://github.com/user-attachments/assets/aa4a4c98-3bec-4185-bbdc-201f95aa8ce8)  
+![image](https://github.com/user-attachments/assets/145f301c-9c8e-4392-80e0-29cf67737f41)
+![image](https://github.com/user-attachments/assets/0a7aee20-6c68-477a-bf86-3e4114f31e2c)
 
 **Logistic Regression**  
 ![image](https://github.com/user-attachments/assets/fd254669-c232-442d-862b-414c448c5930)  
